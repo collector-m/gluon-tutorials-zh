@@ -1,239 +1,59 @@
-# 循环神经网络 --- 从0开始
+# 循环神经网络的从零开始实现
 
-前面的教程里我们使用的网络都属于**前馈神经网络**。之所以叫前馈，是因为整个网络是一条链（回想下`gluon.nn.Sequential`），每一层的结果都是反馈给下一层。这一节我们介绍**循环神经网络**，这里每一层不仅输出给下一层，同时还输出一个**隐含状态**，给当前层在处理下一个样本时使用。下图展示这两种网络的区别。
-
-![](../img/rnn_1.png)
-
-循环神经网络的这种结构使得它适合处理前后有依赖关系数据样本。我们拿语言模型举个例子来解释这个是怎么工作的。语言模型的任务是给定句子的前*t*个字符，然后预测第*t+1*个字符。假设我们的句子是“你好世界”，使用前馈神经网络来预测的一个做法是，在时间1输入“你”，预测”好“，时间2向同一个网络输入“好”预测“世”。下图左边展示了这个过程。
-
-![](../img/rnn_2.png)
-
-注意到一个问题是，当我们预测“世”的时候只给了“好”这个输入，而完全忽略了“你”。直觉上“你”这个词应该对这次的预测比较重要。虽然这个问题通常可以通过**n-gram**来缓解，就是说预测第*t+1*个字符的时候，我们输入前*n*个字符。如果*n=1*，那就是我们这里用的。我们可以增大*n*来使得输入含有更多信息。但我们不能任意增大*n*，因为这样通常带来模型复杂度的增加从而导致需要大量数据和计算来训练模型。
-
-循环神经网络使用一个隐含状态来记录前面看到的数据来帮助当前预测。上图右边展示了这个过程。在预测“好”的时候，我们输出一个隐含状态。我们用这个状态和新的输入“好”来一起预测“世”，然后同时输出一个更新过的隐含状态。我们希望前面的信息能够保存在这个隐含状态里，从而提升预测效果。
-
-## 循环神经网络
-
-在对输入输出数据有了解后，我们来正式介绍循环神经网络。
-
-首先回忆一下单隐含层的前馈神经网络的定义，例如[多层感知机](../chapter_supervised-learning/mlp-scratch.md)。假设隐含层的激活函数是$\phi$，对于一个样本数为$n$特征向量维度为$x$的批量数据$\mathbf{X} \in \mathbb{R}^{n \times x}$（$\mathbf{X}$是一个$n$行$x$列的实数矩阵）来说，那么这个隐含层的输出就是
-
-$$\mathbf{H} = \phi(\mathbf{X} \mathbf{W}_{xh} + \mathbf{b}_h)$$
-
-假定隐含层长度为$h$，其中的$\mathbf{W}_{xh} \in \mathbb{R}^{x \times h}$是权重参数。偏移参数 $\mathbf{b}_h \in \mathbb{R}^{1 \times h}$在与前一项$\mathbf{X} \mathbf{W}_{xh} \in \mathbb{R}^{n \times h}$ 相加时使用了[广播](../chapter_crashcourse/ndarray.md)。这个隐含层的输出的尺寸为$\mathbf{H} \in \mathbb{R}^{n \times h}$。
-
-把隐含层的输出$\mathbf{H}$作为输出层的输入，最终的输出
-
-$$\hat{\mathbf{Y}} = \text{softmax}(\mathbf{H} \mathbf{W}_{hy} + \mathbf{b}_y)$$
-
-假定每个样本对应的输出向量维度为$y$，其中 $\hat{\mathbf{Y}} \in \mathbb{R}^{n \times y}, \mathbf{W}_{hy} \in \mathbb{R}^{h \times y}, \mathbf{b}_y \in \mathbb{R}^{1 \times y}$且两项相加使用了[广播](../chapter_crashcourse/ndarray.md)。
-
-
-将上面网络改成循环神经网络，我们首先对输入输出加上时间戳$t$。假设$\mathbf{X}_t \in \mathbb{R}^{n \times x}$是序列中的第$t$个批量输入（样本数为$n$，每个样本的特征向量维度为$x$），对应的隐含层输出是隐含状态$\mathbf{H}_t  \in \mathbb{R}^{n \times h}$（隐含层长度为$h$），而对应的最终输出是$\hat{\mathbf{Y}}_t \in \mathbb{R}^{n \times y}$（每个样本对应的输出向量维度为$y$）。在计算隐含层的输出的时候，循环神经网络只需要在前馈神经网络基础上加上跟前一时间$t-1$输入隐含层$\mathbf{H}_{t-1} \in \mathbb{R}^{n \times h}$的加权和。为此，我们引入一个新的可学习的权重$\mathbf{W}_{hh} \in \mathbb{R}^{h \times h}$：
-
-$$\mathbf{H}_t = \phi(\mathbf{X}_t \mathbf{W}_{xh} + \mathbf{H}_{t-1} \mathbf{W}_{hh}  + \mathbf{b}_h)$$
-
-输出的计算跟前面一致：
-
-$$\hat{\mathbf{Y}}_t = \text{softmax}(\mathbf{H}_t \mathbf{W}_{hy}  + \mathbf{b}_y)$$
-
-一开始我们提到过，隐含状态可以认为是这个网络的记忆。该网络中，时刻$t$的隐含状态就是该时刻的隐含层变量$\mathbf{H}_t$。它存储前面时间里面的信息。我们的输出是只基于这个状态。最开始的隐含状态里的元素通常会被初始化为0。
-
-
-## 周杰伦歌词数据集
-
-
-为了实现并展示循环神经网络，我们使用周杰伦歌词数据集来训练模型作词。该数据集里包含了著名创作型歌手周杰伦从第一张专辑《Jay》到第十张专辑《跨时代》所有歌曲的歌词。
-
-![](../img/jay.jpg)
-
-
-下面我们读取这个数据并看看前面49个字符（char）是什么样的：
+在本节，我们将从零开始实现一个基于字符级循环神经网络的语言模型，并在周杰伦专辑歌词数据集上训练一个模型来进行歌词创作。首先，我们读取周杰伦专辑歌词数据集。
 
 ```{.python .input  n=1}
-import zipfile
-with zipfile.ZipFile('../data/jaychou_lyrics.txt.zip', 'r') as zin:
-    zin.extractall('../data/')
+import gluonbook as gb
+import math
+from mxnet import autograd, nd
+from mxnet.gluon import loss as gloss
+import time
 
-with open('../data/jaychou_lyrics.txt') as f:
-    corpus_chars = f.read()
-print(corpus_chars[0:49])
+(corpus_indices, char_to_idx, idx_to_char,
+ vocab_size) = gb.load_data_jay_lyrics()
 ```
-
-我们看一下数据集里的字符数。
-
-```{.python .input  n=2}
-len(corpus_chars)
-```
-
-接着我们稍微处理下数据集。为了打印方便，我们把换行符替换成空格，然后截去后面一段使得接下来的训练会快一点。
-
-```{.python .input  n=3}
-corpus_chars = corpus_chars.replace('\n', ' ').replace('\r', ' ')
-corpus_chars = corpus_chars[0:20000]
-```
-
-## 字符的数值表示
-
-先把数据里面所有不同的字符拿出来做成一个字典：
-
-```{.python .input  n=4}
-idx_to_char = list(set(corpus_chars))
-char_to_idx = dict([(char, i) for i, char in enumerate(idx_to_char)])
-
-vocab_size = len(char_to_idx)
-
-print('vocab size:', vocab_size)
-```
-
-然后可以把每个字符转成从0开始的索引(index)来方便之后的使用。
-
-```{.python .input  n=5}
-corpus_indices = [char_to_idx[char] for char in corpus_chars]
-
-sample = corpus_indices[:40]
-
-print('chars: \n', ''.join([idx_to_char[idx] for idx in sample]))
-print('\nindices: \n', sample)
-```
-
-## 时序数据的批量采样
-
-同之前一样我们需要每次随机读取一些（`batch_size`个）样本和其对用的标号。这里的样本跟前面有点不一样，这里一个样本通常包含一系列连续的字符（前馈神经网络里可能每个字符作为一个样本）。
-
-如果我们把序列长度（`num_steps`）设成5，那么一个可能的样本是“想要有直升”。其对应的标号仍然是长为5的序列，每个字符是对应的样本里字符的后面那个。例如前面样本的标号就是“要有直升机”。
-
-
-### 随机批量采样
-
-下面代码每次从数据里随机采样一个批量。
-
-```{.python .input  n=6}
-import random
-from mxnet import nd
-
-def data_iter_random(corpus_indices, batch_size, num_steps, ctx=None):
-    # 减一是因为label的索引是相应data的索引加一
-    num_examples = (len(corpus_indices) - 1) // num_steps
-    epoch_size = num_examples // batch_size
-    # 随机化样本
-    example_indices = list(range(num_examples))
-    random.shuffle(example_indices)
-
-    # 返回num_steps个数据
-    def _data(pos):
-        return corpus_indices[pos: pos + num_steps]
-
-    for i in range(epoch_size):
-        # 每次读取batch_size个随机样本
-        i = i * batch_size
-        batch_indices = example_indices[i: i + batch_size]
-        data = nd.array(
-            [_data(j * num_steps) for j in batch_indices], ctx=ctx)
-        label = nd.array(
-            [_data(j * num_steps + 1) for j in batch_indices], ctx=ctx)
-        yield data, label
-```
-
-为了便于理解时序数据上的随机批量采样，让我们输入一个从0到29的人工序列，看下读出来长什么样：
-
-```{.python .input  n=7}
-my_seq = list(range(30))
-
-for data, label in data_iter_random(my_seq, batch_size=2, num_steps=3):
-    print('data: ', data, '\nlabel:', label, '\n')
-```
-
-由于各个采样在原始序列上的位置是随机的时序长度为`num_steps`的连续数据点，相邻的两个随机批量在原始序列上的位置不一定相毗邻。因此，在训练模型时，读取每个随机时序批量前需要重新初始化隐含状态。
-
-
-### 相邻批量采样
-
-除了对原序列做随机批量采样之外，我们还可以使相邻的两个随机批量在原始序列上的位置相毗邻。
-
-```{.python .input  n=8}
-def data_iter_consecutive(corpus_indices, batch_size, num_steps, ctx=None):
-    corpus_indices = nd.array(corpus_indices, ctx=ctx)
-    data_len = len(corpus_indices)
-    batch_len = data_len // batch_size
-
-    indices = corpus_indices[0: batch_size * batch_len].reshape((
-        batch_size, batch_len))
-    # 减一是因为label的索引是相应data的索引加一
-    epoch_size = (batch_len - 1) // num_steps
-    
-    for i in range(epoch_size):
-        i = i * num_steps
-        data = indices[:, i: i + num_steps]
-        label = indices[:, i + 1: i + num_steps + 1]
-        yield data, label
-```
-
-相同地，为了便于理解时序数据上的相邻批量采样，让我们输入一个从0到29的人工序列，看下读出来长什么样：
-
-```{.python .input  n=9}
-my_seq = list(range(30))
-
-for data, label in data_iter_consecutive(my_seq, batch_size=2, num_steps=3):
-    print('data: ', data, '\nlabel:', label, '\n')
-```
-
-由于各个采样在原始序列上的位置是毗邻的时序长度为`num_steps`的连续数据点，因此，使用相邻批量采样训练模型时，读取每个时序批量前，我们需要将该批量最开始的隐含状态设为上个批量最终输出的隐含状态。在同一个epoch中，隐含状态只需要在该epoch开始的时候初始化。
-
 
 ## One-hot向量
 
-注意到每个字符现在是用一个整数来表示，而输入进网络我们需要一个定长的向量。一个常用的办法是使用one-hot来将其表示成向量。也就是说，如果一个字符的整数值是$i$, 那么我们创建一个全0的长为`vocab_size`的向量，并将其第$i$位设成1。该向量就是对原字符的one-hot向量。
+为了将词表示成向量来输入进神经网络，一个简单的办法是使用one-hot向量。假设词典中不同字符的数量为$N$（即`vocab_size`），每个字符已经同一个从0到$N-1$的连续整数值索引一一对应。如果一个字符的索引是整数$i$, 那么我们创建一个全0的长为$N$的向量，并将其位置为$i$的元素设成1。该向量就是对原字符的one-hot向量。下面分别展示了索引为0和2的one-hot向量，向量长度等于词典大小。
 
-```{.python .input  n=10}
+```{.python .input  n=2}
 nd.one_hot(nd.array([0, 2]), vocab_size)
 ```
 
-记得前面我们每次得到的数据是一个`batch_size * num_steps`的批量。下面这个函数将其转换成`num_steps`个可以输入进网络的`batch_size * vocab_size`的矩阵。对于一个长度为`num_steps`的序列，每个批量输入$\mathbf{X} \in \mathbb{R}^{n \times x}$，其中$n=$ `batch_size`，而$x=$`vocab_size`（onehot编码向量维度）。
+我们每次采样的小批量的形状是（批量大小，时间步数）。下面的函数将这样的小批量变换成数个可以输入进网络的形状为（批量大小，词典大小）的矩阵，总数与时间步数相等。也就是说，时间步$t$的输入$\boldsymbol{X}_t \in \mathbb{R}^{n \times d}$，其中$n$为批量大小，$d$为输入个数，即one-hot向量长度（词典大小）。
 
-```{.python .input  n=11}
-def get_inputs(data):
-    return [nd.one_hot(X, vocab_size) for X in data.T]
+```{.python .input  n=3}
+def to_onehot(X, size):  # 本函数已保存在 gluonbook 包中方便以后使用。
+    return [nd.one_hot(x, size) for x in X.T]
 
-inputs = get_inputs(data)
-
-print('input length: ', len(inputs))
-print('input[0] shape: ', inputs[0].shape)
+X = nd.arange(10).reshape((2, 5))
+inputs = to_onehot(X, vocab_size)
+len(inputs), inputs[0].shape
 ```
 
 ## 初始化模型参数
 
-对于序列中任意一个时间戳，一个字符的输入是维度为`vocab_size`的one-hot向量，对应输出是预测下一个时间戳为词典中任意字符的概率，因而该输出是维度为`vocab_size`的向量。
+接下来，我们初始化模型参数。隐藏单元个数 `num_hiddens`是一个超参数。
 
-当序列中某一个时间戳的输入为一个样本数为`batch_size`（对应模型定义中的$n$）的批量，每个时间戳上的输入和输出皆为尺寸`batch_size * vocab_size`（对应模型定义中的$n \times x$）的矩阵。假设每个样本对应的隐含状态的长度为`hidden_dim`（对应模型定义中隐含层长度$h$），根据矩阵乘法定义，我们可以推断出模型隐含层和输出层中各个参数的尺寸。
-
-```{.python .input  n=12}
-import mxnet as mx
-
-# 尝试使用GPU
-import sys
-sys.path.append('..')
-import utils
-ctx = utils.try_gpu()
-print('Will use', ctx)
-
-input_dim = vocab_size
-# 隐含状态长度
-hidden_dim = 256
-output_dim = vocab_size
-std = .01
+```{.python .input  n=4}
+num_inputs, num_hiddens, num_outputs = vocab_size, 256, vocab_size
+ctx = gb.try_gpu()
+print('will use', ctx)
 
 def get_params():
-    # 隐含层
-    W_xh = nd.random_normal(scale=std, shape=(input_dim, hidden_dim), ctx=ctx)
-    W_hh = nd.random_normal(scale=std, shape=(hidden_dim, hidden_dim), ctx=ctx)
-    b_h = nd.zeros(hidden_dim, ctx=ctx)
+    def _one(shape):
+        return nd.random.normal(scale=0.01, shape=shape, ctx=ctx)
 
-    # 输出层
-    W_hy = nd.random_normal(scale=std, shape=(hidden_dim, output_dim), ctx=ctx)
-    b_y = nd.zeros(output_dim, ctx=ctx)
-
-    params = [W_xh, W_hh, b_h, W_hy, b_y]
+    # 隐藏层参数。
+    W_xh = _one((num_inputs, num_hiddens))
+    W_hh = _one((num_hiddens, num_hiddens))
+    b_h = nd.zeros(num_hiddens, ctx=ctx)
+    # 输出层参数。
+    W_hq = _one((num_hiddens, num_outputs))
+    b_q = nd.zeros(num_outputs, ctx=ctx)
+    # 附上梯度。
+    params = [W_xh, W_hh, b_h, W_hq, b_q]
     for param in params:
         param.attach_grad()
     return params
@@ -241,242 +61,203 @@ def get_params():
 
 ## 定义模型
 
-当序列中某一个时间戳的输入为一个样本数为`batch_size`的批量，而整个序列长度为`num_steps`时，以下`rnn`函数的`inputs`和`outputs`皆为`num_steps` 个尺寸为`batch_size * vocab_size`的矩阵，隐含变量$\mathbf{H}$是一个尺寸为`batch_size * hidden_dim`的矩阵。该隐含变量$\mathbf{H}$也是循环神经网络的隐含状态`state`。
+我们根据循环神经网络的计算表达式实现该模型。首先定义`init_rnn_state`函数来返回初始化的隐藏状态。它返回由一个形状为（批量大小，隐藏单元个数）的值为0的NDArray组成的元组。使用元组是为了更方便处理隐藏状态含有多个NDArray的情况。
 
-我们将前面的模型公式翻译成代码。这里的激活函数使用了按元素操作的双曲正切函数
+```{.python .input  n=5}
+def init_rnn_state(batch_size, num_hiddens, ctx):
+    return (nd.zeros(shape=(batch_size, num_hiddens), ctx=ctx), )
+```
 
-$$\text{tanh}(x) = \frac{1 - e^{-2x}}{1 + e^{-2x}}$$
+下面的`rnn`函数定义了在一个时间步里如何计算隐藏状态和输出。这里的激活函数使用了tanh函数。[“多层感知机”](../chapter_deep-learning-basics/mlp.md)一节中介绍过，当元素在实数域上均匀分布时，tanh函数值的均值为0。
 
-需要注意的是，双曲正切函数的值域是$[-1, 1]$。如果自变量均匀分布在整个实域，该激活函数输出的均值为0。
-
-```{.python .input  n=13}
-def rnn(inputs, state, *params):
-    # inputs: num_steps 个尺寸为 batch_size * vocab_size 矩阵。
-    # H: 尺寸为 batch_size * hidden_dim 矩阵。
-    # outputs: num_steps 个尺寸为 batch_size * vocab_size 矩阵。
-    H = state
-    W_xh, W_hh, b_h, W_hy, b_y = params
+```{.python .input  n=6}
+def rnn(inputs, state, params):
+    # inputs 和 outputs 皆为 num_steps 个形状为（batch_size，vocab_size）的矩阵。
+    W_xh, W_hh, b_h, W_hq, b_q = params
+    H, = state
     outputs = []
     for X in inputs:
         H = nd.tanh(nd.dot(X, W_xh) + nd.dot(H, W_hh) + b_h)
-        Y = nd.dot(H, W_hy) + b_y
+        Y = nd.dot(H, W_hq) + b_q
         outputs.append(Y)
-    return (outputs, H)
+    return outputs, (H,)
 ```
 
-做个简单的测试：
+做个简单的测试来观察输出结果的个数（时间步数），以及第一个时间步的输出层输出形状和隐藏状态形状。
 
-```{.python .input  n=14}
-state = nd.zeros(shape=(data.shape[0], hidden_dim), ctx=ctx)
-
+```{.python .input  n=7}
+state = init_rnn_state(X.shape[0], num_hiddens, ctx)
+inputs = to_onehot(X.as_in_context(ctx), vocab_size)
 params = get_params()
-outputs, state_new = rnn(get_inputs(data.as_in_context(ctx)), state, *params)
-
-print('output length: ',len(outputs))
-print('output[0] shape: ', outputs[0].shape)
-print('state shape: ', state_new.shape)
+outputs, state_new = rnn(inputs, state, params)
+len(outputs), outputs[0].shape, state_new[0].shape
 ```
 
-## 预测序列
+## 定义预测函数
 
-在做预测时我们只需要给定时间0的输入和起始隐含变量。然后我们每次将上一个时间的输出作为下一个时间的输入。
+以下函数基于前缀`prefix`（含有数个字符的字符串）来预测接下来的`num_chars`个字符。这个函数稍显复杂，其中我们将循环神经单元`rnn`设置成了函数参数，这样在后面小节介绍其他循环神经网络时能重复使用这个函数。
 
-![](../img/rnn_3.png)
-
-```{.python .input  n=15}
-def predict_rnn(rnn, prefix, num_chars, params, hidden_dim, ctx, idx_to_char,
-                char_to_idx, get_inputs, is_lstm=False):
-    # 预测以 prefix 开始的接下来的 num_chars 个字符。
-    prefix = prefix.lower()
-    state_h = nd.zeros(shape=(1, hidden_dim), ctx=ctx)
-    if is_lstm:
-        # 当RNN使用LSTM时才会用到，这里可以忽略。
-        state_c = nd.zeros(shape=(1, hidden_dim), ctx=ctx)
+```{.python .input  n=8}
+# 本函数已保存在 gluonbook 包中方便以后使用。
+def predict_rnn(prefix, num_chars, rnn, params, init_rnn_state,
+                num_hiddens, vocab_size, ctx, idx_to_char, char_to_idx):
+    state = init_rnn_state(1, num_hiddens, ctx)
     output = [char_to_idx[prefix[0]]]
-    for i in range(num_chars + len(prefix)):
-        X = nd.array([output[-1]], ctx=ctx)
-        # 在序列中循环迭代隐含变量。
-        if is_lstm:
-            # 当RNN使用LSTM时才会用到，这里可以忽略。
-            Y, state_h, state_c = rnn(get_inputs(X), state_h, state_c, *params)
+    for t in range(num_chars + len(prefix) - 1):
+        # 将上一时间步的输出作为当前时间步的输入。
+        X = to_onehot(nd.array([output[-1]], ctx=ctx), vocab_size)
+        # 计算输出和更新隐藏状态。
+        (Y, state) = rnn(X, state, params)
+        # 下一个时间步的输入是 prefix 里的字符或者当前的最佳预测字符。
+        if t < len(prefix) - 1:
+            output.append(char_to_idx[prefix[t + 1]])
         else:
-            Y, state_h = rnn(get_inputs(X), state_h, *params)
-        if i < len(prefix)-1:
-            next_input = char_to_idx[prefix[i+1]]
-        else:
-            next_input = int(Y[0].argmax(axis=1).asscalar())
-        output.append(next_input)
+            output.append(int(Y[0].argmax(axis=1).asscalar()))
     return ''.join([idx_to_char[i] for i in output])
 ```
 
-## 梯度剪裁
+我们先测试一下`predict_rnn`函数。我们将根据前缀“分开”创作长度为10个字符（不考虑前缀长度）的一段歌词。因为模型参数为随机值，所以预测结果也是随机的。
 
-我们在[正向传播和反向传播](../chapter_supervised-learning/backprop.md)中提到，
-训练神经网络往往需要依赖梯度计算的优化算法，例如我们之前介绍的[随机梯度下降](../chapter_supervised-learning/linear-regression-scratch.md)。
-而在循环神经网络的训练中，当每个时序训练数据样本的时序长度`num_steps`较大或者时刻$t$较小，目标函数有关$t$时刻的隐含层变量梯度较容易出现衰减（valishing）或爆炸（explosion）。我们会在[下一节](bptt.md)详细介绍出现该现象的原因。
+```{.python .input  n=9}
+predict_rnn('分开', 10, rnn, params, init_rnn_state, num_hiddens, vocab_size,
+            ctx, idx_to_char, char_to_idx)
+```
 
-为了应对梯度爆炸，一个常用的做法是如果梯度特别大，那么就投影到一个比较小的尺度上。假设我们把所有梯度接成一个向量 $\boldsymbol{g}$，假设剪裁的阈值是$\theta$，那么我们这样剪裁使得$\|\boldsymbol{g}\|$不会超过$\theta$：
+## 裁剪梯度
 
-$$ \boldsymbol{g} = \min\left(\frac{\theta}{\|\boldsymbol{g}\|}, 1\right)\boldsymbol{g}$$
+循环神经网络中较容易出现梯度衰减或爆炸。我们会在本章后面的小节中解释这个原因。为了应对梯度爆炸，我们可以裁剪梯度（clip gradient）。假设我们把所有模型参数梯度的元素拼接成一个向量 $\boldsymbol{g}$，并设裁剪的阈值是$\theta$。裁剪后的梯度
 
-```{.python .input  n=16}
+$$ \min\left(\frac{\theta}{\|\boldsymbol{g}\|}, 1\right)\boldsymbol{g}$$
+
+的$L_2$范数不超过$\theta$。
+
+```{.python .input  n=10}
+# 本函数已保存在 gluonbook 包中方便以后使用。
 def grad_clipping(params, theta, ctx):
-    if theta is not None:
-        norm = nd.array([0.0], ctx)
-        for p in params:
-            norm += nd.sum(p.grad ** 2)
-        norm = nd.sqrt(norm).asscalar()
-        if norm > theta:
-            for p in params:
-                p.grad[:] *= theta / norm
+    norm = nd.array([0.0], ctx)
+    for param in params:
+        norm += (param.grad ** 2).sum()
+    norm = norm.sqrt().asscalar()
+    if norm > theta:
+        for param in params:
+            param.grad[:] *= theta / norm
 ```
 
-## 训练模型
+## 困惑度
 
-下面我们可以还是训练模型。跟前面前置网络的教程比，这里有以下几个不同。
+我们通常使用困惑度（perplexity）来评价语言模型的好坏。回忆一下[“Softmax回归”](../chapter_deep-learning-basics/softmax-regression.md)一节中交叉熵损失函数的定义。困惑度是对交叉熵损失函数做指数运算后得到的值。特别地，
 
-1. 通常我们使用困惑度（Perplexity）这个指标。
-2. 在更新前我们对梯度做剪裁。
-3. 在训练模型时，对时序数据采用不同批量采样方法将导致隐含变量初始化的不同。
+* 最佳情况下，模型总是把标签类别的概率预测为1。此时困惑度为1。
+* 最坏情况下，模型总是把标签类别的概率预测为0。此时困惑度为正无穷。
+* 基线情况下，模型总是预测所有类别的概率都相同。此时困惑度为类别个数。
 
-### 困惑度（Perplexity）
+显然，任何一个有效模型的困惑度必须小于类别个数。在本例中，困惑度必须小于词典大小`vocab_size`。
 
-回忆以下我们之前介绍的[交叉熵损失函数](../chapter_supervised-learning/softmax-regression-scratch.md)。在语言模型中，该损失函数即被预测字符的对数似然平均值的相反数：
+## 定义模型训练函数
 
-$$\text{loss} = -\frac{1}{N} \sum_{i=1}^N \log p_{\text{target}_i}$$
+跟之前章节的模型训练函数相比，这里的模型训练函数有以下几个不同。
 
-其中$N$是预测的字符总数，$p_{\text{target}_i}$是在第$i$个预测中真实的下个字符被预测的概率。
+1. 使用困惑度（perplexity）评价模型。
+2. 在迭代模型参数前裁剪梯度。
+3. 对时序数据采用不同采样方法将导致隐藏状态初始化的不同。相关的讨论可参考[“语言模型数据集（周杰伦专辑歌词）”](lang-model-dataset.md)一节。
 
-而这里的困惑度可以简单的认为就是对交叉熵做exp运算使得数值更好读。
+另外，考虑到后面将介绍的其它循环神经网络，为了更通用，这里的函数实现更长一些。
 
-为了解释困惑度的意义，我们先考虑一个完美结果：模型总是把真实的下个字符的概率预测为1。也就是说，对任意的$i$来说，$p_{\text{target}_i} = 1$。这种完美情况下，困惑度值为1。
-
-我们再考虑一个基线结果：给定不重复的字符集合$W$及其字符总数$|W|$，模型总是预测下个字符为集合$W$中任一字符的概率都相同。也就是说，对任意的$i$来说，$p_{\text{target}_i} = 1/|W|$。这种基线情况下，困惑度值为$|W|$。
-
-最后，我们可以考虑一个最坏结果：模型总是把真实的下个字符的概率预测为0。也就是说，对任意的$i$来说，$p_{\text{target}_i} = 0$。这种最坏情况下，困惑度值为正无穷。
-
-任何一个有效模型的困惑度值必须小于预测集中元素的数量。在本例中，困惑度必须小于字典中的字符数$|W|$。如果一个模型可以取得较低的困惑度的值（更靠近1），通常情况下，该模型预测更加准确。
-
-```{.python .input  n=17}
-from mxnet import autograd
-from mxnet import gluon
-from math import exp
-           
-def train_and_predict_rnn(rnn, is_random_iter, epochs, num_steps, hidden_dim, 
-                          learning_rate, clipping_theta, batch_size,
-                          pred_period, pred_len, seqs, get_params, get_inputs,
-                          ctx, corpus_indices, idx_to_char, char_to_idx,
-                          is_lstm=False):
+```{.python .input  n=11}
+# 本函数已保存在 gluonbook 包中方便以后使用。
+def train_and_predict_rnn(rnn, get_params, init_rnn_state, num_hiddens,
+                          vocab_size, ctx, corpus_indices, idx_to_char,
+                          char_to_idx, is_random_iter, num_epochs, num_steps,
+                          lr, clipping_theta, batch_size, pred_period,
+                          pred_len, prefixes):
     if is_random_iter:
-        data_iter = data_iter_random
+        data_iter_fn = gb.data_iter_random
     else:
-        data_iter = data_iter_consecutive
+        data_iter_fn = gb.data_iter_consecutive
     params = get_params()
-    
-    softmax_cross_entropy = gluon.loss.SoftmaxCrossEntropyLoss()
+    loss = gloss.SoftmaxCrossEntropyLoss()
 
-    for e in range(1, epochs + 1):
-        # 如使用相邻批量采样，在同一个epoch中，隐含变量只需要在该epoch开始的时候初始化。
-        if not is_random_iter:
-            state_h = nd.zeros(shape=(batch_size, hidden_dim), ctx=ctx)
-            if is_lstm:
-                # 当RNN使用LSTM时才会用到，这里可以忽略。
-                state_c = nd.zeros(shape=(batch_size, hidden_dim), ctx=ctx)
-        train_loss, num_examples = 0, 0
-        for data, label in data_iter(corpus_indices, batch_size, num_steps, 
-                                     ctx):
-            # 如使用随机批量采样，处理每个随机小批量前都需要初始化隐含变量。
-            if is_random_iter:
-                state_h = nd.zeros(shape=(batch_size, hidden_dim), ctx=ctx)
-                if is_lstm:
-                    # 当RNN使用LSTM时才会用到，这里可以忽略。
-                    state_c = nd.zeros(shape=(batch_size, hidden_dim), ctx=ctx)
+    for epoch in range(num_epochs):
+        if not is_random_iter:  # 如使用相邻采样，在 epoch 开始时初始化隐藏状态。
+            state = init_rnn_state(batch_size, num_hiddens, ctx)
+        loss_sum, start = 0.0, time.time()
+        data_iter = data_iter_fn(corpus_indices, batch_size, num_steps, ctx)
+        for t, (X, Y) in enumerate(data_iter):
+            if is_random_iter:  # 如使用随机采样，在每个小批量更新前初始化隐藏状态。
+                state = init_rnn_state(batch_size, num_hiddens, ctx)
+            else:  # 否则需要使用 detach 函数从计算图分离隐藏状态。
+                for s in state:
+                    s.detach()
             with autograd.record():
-                # outputs 尺寸：(batch_size, vocab_size)
-                if is_lstm:
-                    # 当RNN使用LSTM时才会用到，这里可以忽略。
-                    outputs, state_h, state_c = rnn(get_inputs(data), state_h,
-                                                    state_c, *params) 
-                else:
-                    outputs, state_h = rnn(get_inputs(data), state_h, *params)
-                # 设t_ib_j为i时间批量中的j元素:
-                # label 尺寸：（batch_size * num_steps）
-                # label = [t_0b_0, t_0b_1, ..., t_1b_0, t_1b_1, ..., ]
-                label = label.T.reshape((-1,))
-                # 拼接outputs，尺寸：(batch_size * num_steps, vocab_size)。
+                inputs = to_onehot(X, vocab_size)
+                # outputs 有 num_steps 个形状为（batch_size，vocab_size）的矩阵。
+                (outputs, state) = rnn(inputs, state, params)
+                # 拼接之后形状为（num_steps * batch_size，vocab_size）。
                 outputs = nd.concat(*outputs, dim=0)
-                # 经上述操作，outputs和label已对齐。
-                loss = softmax_cross_entropy(outputs, label)
-            loss.backward()
+                # Y 的形状是（batch_size，num_steps），转置后再变成长度为
+                # batch * num_steps 的向量，这样跟输出的行一一对应。
+                y = Y.T.reshape((-1,))
+                # 使用交叉熵损失计算平均分类误差。
+                l = loss(outputs, y).mean()
+            l.backward()
+            grad_clipping(params, clipping_theta, ctx)  # 裁剪梯度。
+            gb.sgd(params, lr, 1)  # 因为误差已经取过均值，梯度不用再做平均。
+            loss_sum += l.asscalar()
 
-            grad_clipping(params, clipping_theta, ctx)
-            utils.SGD(params, learning_rate)
-
-            train_loss += nd.sum(loss).asscalar()
-            num_examples += loss.size
-
-        if e % pred_period == 0:
-            print("Epoch %d. Perplexity %f" % (e, 
-                                               exp(train_loss/num_examples)))
-            for seq in seqs:
-                print(' - ', predict_rnn(rnn, seq, pred_len, params,
-                      hidden_dim, ctx, idx_to_char, char_to_idx, get_inputs,
-                      is_lstm))
-            print()
+        if (epoch + 1) % pred_period == 0:
+            print('epoch %d, perplexity %f, time %.2f sec' % (
+                epoch + 1, math.exp(loss_sum / (t + 1)), time.time() - start))
+            for prefix in prefixes:
+                print(' -', predict_rnn(
+                    prefix, pred_len, rnn, params, init_rnn_state,
+                    num_hiddens, vocab_size, ctx, idx_to_char, char_to_idx))
 ```
 
-以下定义模型参数和预测序列前缀。
+## 训练模型并创作歌词
 
-```{.python .input}
-epochs = 200
-num_steps = 35
-learning_rate = 0.1
-batch_size = 32
+现在我们可以训练模型了。首先，设置模型超参数。我们将根据前缀“分开”和“不分开”分别创作长度为50个字符（不考虑前缀长度）的一段歌词。我们每过50个迭代周期便根据当前训练的模型创作一段歌词。
 
-softmax_cross_entropy = gluon.loss.SoftmaxCrossEntropyLoss()
-
-seq1 = '分开'
-seq2 = '不分开'
-seq3 = '战争中部队'
-seqs = [seq1, seq2, seq3]
+```{.python .input  n=12}
+num_epochs, num_steps, batch_size, lr, clipping_theta = 200, 35, 32, 1e2, 1e-2
+pred_period, pred_len, prefixes = 50, 50, ['分开', '不分开']
 ```
 
-我们先采用随机批量采样实验循环神经网络谱写歌词。我们假定谱写歌词的前缀分别为“分开”、“不分开”和“战争中部队”。
+下面采用随机采样训练模型并创作歌词。
 
-```{.python .input  n=18}
-train_and_predict_rnn(rnn=rnn, is_random_iter=True, epochs=200, num_steps=35,
-                      hidden_dim=hidden_dim, learning_rate=0.2,
-                      clipping_theta=5, batch_size=32, pred_period=20,
-                      pred_len=100, seqs=seqs, get_params=get_params,
-                      get_inputs=get_inputs, ctx=ctx,
-                      corpus_indices=corpus_indices, idx_to_char=idx_to_char,
-                      char_to_idx=char_to_idx)
+```{.python .input  n=13}
+train_and_predict_rnn(rnn, get_params, init_rnn_state, num_hiddens,
+                      vocab_size, ctx, corpus_indices, idx_to_char,
+                      char_to_idx, True, num_epochs, num_steps, lr,
+                      clipping_theta, batch_size, pred_period, pred_len,
+                      prefixes)
 ```
 
-我们再采用相邻批量采样实验循环神经网络谱写歌词。
+接下来采用相邻采样训练模型并创作歌词。
 
 ```{.python .input  n=19}
-train_and_predict_rnn(rnn=rnn, is_random_iter=False, epochs=200, num_steps=35,
-                      hidden_dim=hidden_dim, learning_rate=0.2,
-                      clipping_theta=5, batch_size=32, pred_period=20,
-                      pred_len=100, seqs=seqs, get_params=get_params,
-                      get_inputs=get_inputs, ctx=ctx,
-                      corpus_indices=corpus_indices, idx_to_char=idx_to_char,
-                      char_to_idx=char_to_idx)
+train_and_predict_rnn(rnn, get_params, init_rnn_state, num_hiddens,
+                      vocab_size, ctx, corpus_indices, idx_to_char,
+                      char_to_idx, False, num_epochs, num_steps, lr,
+                      clipping_theta, batch_size, pred_period, pred_len,
+                      prefixes)
 ```
 
-可以看到一开始学到简单的字符，然后简单的词，接着是复杂点的词，然后看上去似乎像个句子了。
+## 小结
 
-## 结论
-
-* 通过隐含状态，循环神经网络适合处理前后有依赖关系时序数据样本。
-* 对前后有依赖关系时序数据样本批量采样时，我们可以使用随机批量采样和相邻批量采样。
-* 循环神经网络较容易出现梯度衰减和爆炸。
+* 我们可以应用基于字符级循环神经网络的语言模型来生成为本序列，例如创作歌词。
+* 当训练循环神经网络时，为了应对梯度爆炸，我们可以裁剪梯度。
+* 困惑度是对交叉熵损失函数做指数运算后得到的值。
 
 
 ## 练习
 
-* 调调参数（例如数据集大小、序列长度、隐含状态长度和学习率），看看对运行时间、perplexity和预测的结果造成的影响。
-* 在随机批量采样中，如果在同一个epoch中只把隐含变量在该epoch开始的时候初始化会怎么样？
+* 调调超参数，观察并分析对运行时间、困惑度以及创作歌词的结果造成的影响。
+* 不裁剪梯度，运行本节代码。结果会怎样？
+* 将`pred_period`变量设为1，观察未充分训练的模型（困惑度高）是如何创作歌词的。你获得了什么启发？
+* 将相邻采样改为不从计算图分离隐藏状态，运行时间有没有变化？
+* 将本节中使用的激活函数替换成ReLU，重复本节的实验。
 
-**吐槽和讨论欢迎点**[这里](https://discuss.gluon.ai/t/topic/989)
+
+## 扫码直达[讨论区](https://discuss.gluon.ai/t/topic/989)
+
+![](../img/qr_rnn-scratch.svg)

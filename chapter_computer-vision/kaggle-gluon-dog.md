@@ -1,75 +1,70 @@
-# 实战Kaggle比赛——使用Gluon识别120种狗 (ImageNet Dogs)
+# 实战Kaggle比赛：狗的品种识别 (ImageNet Dogs)
 
 
-我们在本章中选择了Kaggle中的[120种狗类识别问题](https://www.kaggle.com/c/dog-breed-identification)。这是著名的ImageNet的子集数据集。与之前的[CIFAR-10原始图像分类问题](kaggle-gluon-cifar10.md)不同，本问题中的图片文件大小更接近真实照片大小，且大小不一。本问题的输出也变的更加通用：我们将输出每张图片对应120种狗的分别概率。
+我们将在本节动手实战Kaggle比赛中的狗的品种识别问题。该比赛的网页地址是
+
+> https://www.kaggle.com/c/dog-breed-identification
+
+在这个比赛中，我们将识别120类不同品种的狗。这个比赛的数据集实际上是著名的ImageNet的子集数据集。和上一节的CIFAR-10数据集中的图像不同，ImageNet数据集中的图像更高更宽，且大小不一。
+
+图9.18展示了该比赛的网页信息。为了便于提交结果，请先在Kaggle网站上注册账号。
+
+![狗的品种识别比赛的网页信息。比赛数据集可通过点击“Data”标签获取](../img/kaggle-dog.png)
 
 
-## Kaggle中的CIFAR-10原始图像分类问题
+首先，导入实验所需的包或模块。
 
-[Kaggle](https://www.kaggle.com)是一个著名的供机器学习爱好者交流的平台。为了便于提交结果，请大家注册[Kaggle](https://www.kaggle.com)账号。然后请大家先点击[120种狗类识别问题](https://www.kaggle.com/c/dog-breed-identification)了解有关本次比赛的信息。
+```{.python .input}
+import sys
+sys.path.insert(0, '..')
 
-![](../img/kaggle-dog.png)
+import collections
+import datetime
+import gluonbook as gb
+import math
+from mxnet import autograd, gluon, init, nd
+from mxnet.gluon import data as gdata, loss as gloss, model_zoo, nn
+import os
+import shutil
+import zipfile
+```
 
+## 获取数据集
 
-
-## 整理原始数据集
-
-比赛数据分为训练数据集和测试数据集。训练集包含10,222张图片。测试集包含10,357张图片。
-
-两个数据集都是jpg彩色图片，大小接近真实照片大小，且大小不一。训练集一共有120类狗的图片。
-
-
+比赛数据分为训练数据集和测试数据集。训练集了包含10,222张图像，测试集了包含10,357张图像。两个数据集中的图像格式都是JPEG。这些图像都含有RGB三个通道（彩色），高和宽的大小不一。训练集中狗的类别共有120种，例如拉布拉多、贵宾、腊肠、萨摩耶、哈士奇、吉娃娃和约克夏等。
 
 ### 下载数据集
 
-
-登录Kaggle后，数据可以从[120种狗类识别问题](https://www.kaggle.com/c/dog-breed-identification/data)中下载。
-
-* [训练数据集train.zip下载地址](https://www.kaggle.com/c/dog-breed-identification/download/train.zip)
-
-* [测试数据集test.zip下载地址](https://www.kaggle.com/c/dog-breed-identification/download/test.zip)
-
-* [训练数据标签label.csv.zip下载地址](https://www.kaggle.com/c/dog-breed-identification/download/labels.csv.zip)
-
-
-### 解压数据集
-
-训练数据集train.zip和测试数据集test.zip都是压缩格式，下载后它们的路径可以如下：
+登录Kaggle后，我们可以点击图9.18所示的狗的品种识别比赛网页上的“Data”标签，并分别下载训练数据集“train.zip”、测试数据集“test.zip”和训练数据集标签“label.csv.zip”。下载完成后，将它们分别存放在以下路径：
 
 * ../data/kaggle_dog/train.zip
 * ../data/kaggle_dog/test.zip
 * ../data/kaggle_dog/labels.csv.zip
 
-为了使网页编译快一点，我们在git repo里仅仅存放小数据样本（'train_valid_test_tiny.zip'）。执行以下代码会从git repo里解压生成小数据样本。
+
+为方便快速上手，我们提供了上述数据集的小规模采样“train_valid_test_tiny.zip”。如果你要使用上述Kaggle比赛的完整数据集，还需要把下面`demo`变量改为`False`。
 
 ```{.python .input  n=1}
-# 如果训练下载的Kaggle的完整数据集，把demo改为False。
+# 如果使用下载的 Kaggle 比赛的完整数据集，把下面改为 False。
 demo = True
 data_dir = '../data/kaggle_dog'
 
 if demo:
-    zipfiles= ['train_valid_test_tiny.zip']
+    zipfiles = ['train_valid_test_tiny.zip']
 else:
-    zipfiles= ['train.zip', 'test.zip', 'labels.csv.zip']
+    zipfiles = ['train.zip', 'test.zip', 'labels.csv.zip']
 
-import zipfile
-for fin in zipfiles:
-    with zipfile.ZipFile(data_dir + '/' + fin, 'r') as zin:
-        zin.extractall(data_dir)
+for f in zipfiles:
+    with zipfile.ZipFile(data_dir + '/' + f, 'r') as z:
+        z.extractall(data_dir)
 ```
 
 ### 整理数据集
 
-对于Kaggle的完整数据集，我们需要定义下面的reorg_dog_data函数来整理一下。整理后，同一类狗的图片将出现在在同一个文件夹下，便于`Gluon`稍后读取。
-
-函数中的参数如data_dir、train_dir和test_dir对应上述数据存放路径及原始训练和测试的图片集文件夹名称。参数label_file为训练数据标签的文件名称。参数input_dir是整理后数据集文件夹名称。参数valid_ratio是验证集中每类狗的数量占原始训练集中数量最少一类的狗的数量（66）的比重。
+我们定义下面的`reorg_dog_data`函数来整理Kaggle比赛的完整数据集。经过整理后，同一类狗的图像将被放在同一个文件夹下，便于我们稍后读取。
+该函数中的参数`valid_ratio`是验证集中每类狗的样本数与原始训练集中数量最少一类的狗的样本数（66）之比。
 
 ```{.python .input  n=2}
-import math
-import os
-import shutil
-from collections import Counter
-
 def reorg_dog_data(data_dir, label_file, train_dir, test_dir, input_dir, 
                    valid_ratio):
     # 读取训练数据标签。
@@ -78,15 +73,13 @@ def reorg_dog_data(data_dir, label_file, train_dir, test_dir, input_dir,
         lines = f.readlines()[1:]
         tokens = [l.rstrip().split(',') for l in lines]
         idx_label = dict(((idx, label) for idx, label in tokens))
-    labels = set(idx_label.values())
 
-    num_train = len(os.listdir(os.path.join(data_dir, train_dir)))
-    # 训练集中数量最少一类的狗的数量。
-    min_num_train_per_label = (
-        Counter(idx_label.values()).most_common()[:-2:-1][0][1])
-    # 验证集中每类狗的数量。
-    num_valid_per_label = math.floor(min_num_train_per_label * valid_ratio)
-    label_count = dict()
+    # 训练集中数量最少一类的狗的样本数。
+    min_n_train_per_label = (
+        collections.Counter(idx_label.values()).most_common()[:-2:-1][0][1])
+    # 验证集中每类狗的样本数。
+    n_valid_per_label = math.floor(min_n_train_per_label * valid_ratio)
+    label_count = {}
 
     def mkdir_if_not_exist(path):
         if not os.path.exists(os.path.join(*path)):
@@ -99,7 +92,7 @@ def reorg_dog_data(data_dir, label_file, train_dir, test_dir, input_dir,
         mkdir_if_not_exist([data_dir, input_dir, 'train_valid', label])
         shutil.copy(os.path.join(data_dir, train_dir, train_file),
                     os.path.join(data_dir, input_dir, 'train_valid', label))
-        if label not in label_count or label_count[label] < num_valid_per_label:
+        if label not in label_count or label_count[label] < n_valid_per_label:
             mkdir_if_not_exist([data_dir, input_dir, 'valid', label])
             shutil.copy(os.path.join(data_dir, train_dir, train_file),
                         os.path.join(data_dir, input_dir, 'valid', label))
@@ -116,271 +109,210 @@ def reorg_dog_data(data_dir, label_file, train_dir, test_dir, input_dir,
                     os.path.join(data_dir, input_dir, 'test', 'unknown'))
 ```
 
-再次强调，为了使网页编译快一点，我们在这里仅仅使用小数据样本。相应地，我们仅将批量大小设为2。实际训练和测试时应使用Kaggle的完整数据集并调用reorg_dog_data函数整理便于`Gluon`读取的格式。由于数据集较大，批量大小batch_size大小可设为一个较大的整数，例如128。
+由于我们在这里使用了小数据集，所以将批量大小设为1。在实际训练和测试时，我们应使用Kaggle比赛的完整数据集并调用`reorg_dog_data`函数整理数据集。相应地，我们也需要将批量大小`batch_size`设为一个较大的整数，例如128。
 
 ```{.python .input  n=3}
 if demo:
-    # 注意：此处使用小数据集为便于网页编译。
-    input_dir = 'train_valid_test_tiny'
-    # 注意：此处相应使用小批量。对Kaggle的完整数据集可设较大的整数，例如128。
-    batch_size = 2
+    # 注意：此处使用小数据集并将批量大小相应设小。使用 Kaggle 比赛的完整数据集时可设批量大
+    # 小为较大整数。
+    input_dir, batch_size = 'train_valid_test_tiny', 1
 else:
-    label_file = 'labels.csv'
-    train_dir = 'train'
-    test_dir = 'test'
-    input_dir = 'train_valid_test'
-    batch_size = 128
-    valid_ratio = 0.1 
+    label_file, train_dir, test_dir = 'labels.csv', 'train', 'test'
+    input_dir, batch_size, valid_ratio = 'train_valid_test', 128, 0.1
     reorg_dog_data(data_dir, label_file, train_dir, test_dir, input_dir, 
                    valid_ratio)
 ```
 
-## 使用Gluon读取整理后的数据集
+## 图像增广
 
-为避免过拟合，我们在这里使用`image.CreateAugmenter`来增广数据集。例如我们设`rand_mirror=True`即可随机对每张图片做镜面反转。以下我们列举了该函数里的所有参数，这些参数都是可以调的。
+为应对过拟合，我们在这里使用`transforms`来增广数据集。例如，加入`transforms.RandomFlipLeftRight()`即可随机对图像做镜面翻转。我们也通过`transforms.Normalize()`对彩色图像的RGB三个通道分别做标准化。以下列举了其中的部分操作。你可以根据需求来决定是否使用或修改这些操作。
 
 ```{.python .input  n=4}
-from mxnet import autograd
-from mxnet import gluon
-from mxnet import image
-from mxnet import init
-from mxnet import nd
-from mxnet.gluon.data import vision
-import numpy as np
+transform_train = gdata.vision.transforms.Compose([
+    # 随机对图像裁剪出面积为原图像面积 0.08 到 1 倍之间、且高和宽之比在 3/4 和 4/3 之间
+    # 的图像，再放缩为高和宽均为 224 像素的新图像。
+    gdata.vision.transforms.RandomResizedCrop(224, scale=(0.08, 1.0),
+                                              ratio=(3.0/4.0, 4.0/3.0)),
+    # 随机左右翻转图像。
+    gdata.vision.transforms.RandomFlipLeftRight(),
+    # 随机抖动亮度、对比度和饱和度。
+    gdata.vision.transforms.RandomColorJitter(brightness=0.4, contrast=0.4,
+                                              saturation=0.4),
+    # 随机加噪音。
+    gdata.vision.transforms.RandomLighting(0.1),
+    
+    # 将图像像素值按比例缩小到 0 和 1 之间，并将数据格式从“高 * 宽 * 通道”改为
+    # “通道 * 高 * 宽”。
+    gdata.vision.transforms.ToTensor(),
+    # 对图像的每个通道做标准化。
+    gdata.vision.transforms.Normalize([0.485, 0.456, 0.406],
+                                      [0.229, 0.224, 0.225])])
 
-def transform_train(data, label):
-    im = image.imresize(data.astype('float32') / 255, 96, 96)
-    auglist = image.CreateAugmenter(data_shape=(3, 96, 96), resize=0, 
-                        rand_crop=False, rand_resize=False, rand_mirror=True,
-                        mean=None, std=None, 
-                        brightness=0, contrast=0, 
-                        saturation=0, hue=0, 
-                        pca_noise=0, rand_gray=0, inter_method=2)
-    for aug in auglist:
-        im = aug(im)
-    # 将数据格式从"高*宽*通道"改为"通道*高*宽"。
-    im = nd.transpose(im, (2,0,1))
-    return (im, nd.array([label]).asscalar().astype('float32'))
-
-def transform_test(data, label):
-    im = image.imresize(data.astype('float32') / 255, 96, 96)
-    im = nd.transpose(im, (2,0,1))
-    return (im, nd.array([label]).asscalar().astype('float32'))
+# 测试时，只使用确定性的图像预处理操作。
+transform_test = gdata.vision.transforms.Compose([
+    gdata.vision.transforms.Resize(256),
+    # 将图像中央的高和宽均为 224 的正方形区域裁剪出来。
+    gdata.vision.transforms.CenterCrop(224),
+    gdata.vision.transforms.ToTensor(),
+    gdata.vision.transforms.Normalize([0.485, 0.456, 0.406],
+                                      [0.229, 0.224, 0.225])])
 ```
 
-接下来，我们可以使用`Gluon`中的`ImageFolderDataset`类来读取整理后的数据集。
+接下来，我们可以使用`ImageFolderDataset`类来读取整理后的数据集，其中的每个数据样本均包括图像和标签。需要注意的是，我们要在`DataLoader`中调用刚刚定义好的图像增广函数，其中的`transform_first`函数指明对每个数据样本中的图像做数据增广。
 
 ```{.python .input  n=5}
-input_str = data_dir + '/' + input_dir + '/'
+# 读取原始图像文件。flag=1 说明输入图像有三个通道（彩色）。
+train_ds = gdata.vision.ImageFolderDataset(
+    os.path.join(data_dir, input_dir, 'train'), flag=1)
+valid_ds = gdata.vision.ImageFolderDataset(
+    os.path.join(data_dir, input_dir, 'valid'), flag=1)
+train_valid_ds = gdata.vision.ImageFolderDataset(
+    os.path.join(data_dir, input_dir, 'train_valid'), flag=1)
+test_ds = gdata.vision.ImageFolderDataset(
+    os.path.join(data_dir, input_dir, 'test'), flag=1)
 
-# 读取原始图像文件。flag=1说明输入图像有三个通道（彩色）。
-train_ds = vision.ImageFolderDataset(input_str + 'train', flag=1, 
-                                     transform=transform_train)
-valid_ds = vision.ImageFolderDataset(input_str + 'valid', flag=1, 
-                                     transform=transform_test)
-train_valid_ds = vision.ImageFolderDataset(input_str + 'train_valid', 
-                                           flag=1, transform=transform_train)
-test_ds = vision.ImageFolderDataset(input_str + 'test', flag=1, 
-                                     transform=transform_test)
-
-loader = gluon.data.DataLoader
-train_data = loader(train_ds, batch_size, shuffle=True, last_batch='keep')
-valid_data = loader(valid_ds, batch_size, shuffle=True, last_batch='keep')
-train_valid_data = loader(train_valid_ds, batch_size, shuffle=True, 
-                          last_batch='keep')
-test_data = loader(test_ds, batch_size, shuffle=False, last_batch='keep')
-
-# 交叉熵损失函数。
-softmax_cross_entropy = gluon.loss.SoftmaxCrossEntropyLoss()
+train_data = gdata.DataLoader(train_ds.transform_first(transform_train),
+                              batch_size, shuffle=True, last_batch='keep')
+valid_data = gdata.DataLoader(valid_ds.transform_first(transform_test),
+                              batch_size, shuffle=True, last_batch='keep')
+train_valid_data = gdata.DataLoader(train_valid_ds.transform_first(
+    transform_train), batch_size, shuffle=True, last_batch='keep')
+test_data = gdata.DataLoader(test_ds.transform_first(transform_test),
+                             batch_size, shuffle=False, last_batch='keep')
 ```
 
-## 设计模型
+## 定义模型并使用微调
 
-我们这里使用了[ResNet-18](resnet-gluon.md)模型。我们使用[hybridizing](../chapter_gluon-advances/hybridize.md)来提升执行效率。
+这个比赛的数据属于ImageNet数据集的子集，因此我们可以使用[“微调”](fine-tuning.md)一节中介绍的思路，选用在ImageNet完整数据集上预训练过的模型，并通过微调在比赛数据集上进行训练。Gluon提供了丰富的预训练模型，我们在这里以预训练过的ResNet-34模型为例。由于比赛数据集属于预训练数据集的子集，因此我们可以重用预训练模型在输出层的输入（即特征），并将原输出层替换成新的可以训练的小规模输出网络，例如两个串联的全连接层。由于预训练模型的参数在训练中是固定的，我们既节省了训练它们的时间，又节省了存储它们的梯度所需的空间。
 
-请注意：模型可以重新设计，参数也可以重新调整。
+需要注意的是，我们在图像增广中使用了ImageNet数据集上RGB三个通道的均值和标准差做标准化，这和预训练模型所做的标准化是一致的。
 
 ```{.python .input  n=6}
-from mxnet.gluon import nn
-from mxnet import nd
-
-class Residual(nn.HybridBlock):
-    def __init__(self, channels, same_shape=True, **kwargs):
-        super(Residual, self).__init__(**kwargs)
-        self.same_shape = same_shape
-        with self.name_scope():
-            strides = 1 if same_shape else 2
-            self.conv1 = nn.Conv2D(channels, kernel_size=3, padding=1,
-                                  strides=strides)
-            self.bn1 = nn.BatchNorm()
-            self.conv2 = nn.Conv2D(channels, kernel_size=3, padding=1)
-            self.bn2 = nn.BatchNorm()
-            if not same_shape:
-                self.conv3 = nn.Conv2D(channels, kernel_size=1,
-                                      strides=strides)
-
-    def hybrid_forward(self, F, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        if not self.same_shape:
-            x = self.conv3(x)
-        return F.relu(out + x)
-
-    
-class ResNet(nn.HybridBlock):
-    def __init__(self, num_classes, verbose=False, **kwargs):
-        super(ResNet, self).__init__(**kwargs)
-        self.verbose = verbose
-        with self.name_scope():
-            net = self.net = nn.HybridSequential()
-            # 模块1
-            net.add(nn.Conv2D(channels=32, kernel_size=3, strides=1, 
-                              padding=1))
-            net.add(nn.BatchNorm())
-            net.add(nn.Activation(activation='relu'))
-            # 模块2
-            for _ in range(3):
-                net.add(Residual(channels=32))
-            # 模块3
-            net.add(Residual(channels=64, same_shape=False))
-            for _ in range(2):
-                net.add(Residual(channels=64))
-            # 模块4
-            net.add(Residual(channels=128, same_shape=False))
-            for _ in range(2):
-                net.add(Residual(channels=128))
-            # 模块5
-            net.add(nn.GlobalAvgPool2D())
-            net.add(nn.Flatten())
-            net.add(nn.Dense(num_classes))
-
-    def hybrid_forward(self, F, x):
-        out = x
-        for i, b in enumerate(self.net):
-            out = b(out)
-            if self.verbose:
-                print('Block %d output: %s'%(i+1, out.shape))
-        return out
-
-
 def get_net(ctx):
-    num_outputs = 120
-    net = ResNet(num_outputs)
-    net.initialize(ctx=ctx, init=init.Xavier())
-    return net
+    # 设 pretrained=True 就能获取预训练模型的参数。第一次使用时需要联网下载。
+    finetune_net = model_zoo.vision.resnet34_v2(pretrained=True)
+    # 定义新的输出网络。
+    finetune_net.output_new = nn.HybridSequential(prefix='')
+    finetune_net.output_new.add(nn.Dense(256, activation='relu'))
+    # 120是输出的类别数。
+    finetune_net.output_new.add(nn.Dense(120))
+    # 初始化输出网络。
+    finetune_net.output_new.initialize(init.Xavier(), ctx=ctx)
+    # 把模型参数分配到即将用于计算的 CPU 或 GPU 上。
+    finetune_net.collect_params().reset_ctx(ctx)
+    return finetune_net
 ```
 
-## 训练模型并调参
+## 定义训练函数
 
-在[过拟合](../chapter_supervised-learning/underfit-overfit.md)中我们讲过，过度依赖训练数据集的误差来推断测试数据集的误差容易导致过拟合。由于图像分类训练时间可能较长，为了方便，我们这里不再使用K折交叉验证，而是依赖验证集的结果来调参。
-
-我们定义损失函数以便于计算验证集上的损失函数值。我们也定义了模型训练函数，其中的优化算法和参数都是可以调的。
+我们将依赖模型在验证集上的表现来选择模型并调节超参数。模型的训练函数`train`只会训练我们定义的输出网络。我们记录了每个迭代周期的训练时间，这有助于比较不同模型的时间开销。
 
 ```{.python .input  n=7}
-import datetime
-import sys
-sys.path.append('..')
-import utils
+loss = gloss.SoftmaxCrossEntropyLoss()
 
 def get_loss(data, net, ctx):
-    loss = 0.0
-    for feas, label in data:
-        label = label.as_in_context(ctx)
-        output = net(feas.as_in_context(ctx))
-        cross_entropy = softmax_cross_entropy(output, label)
-        loss += nd.mean(cross_entropy).asscalar()
-    return loss / len(data)
+    l = 0.0
+    for X, y in data:
+        y = y.as_in_context(ctx)
+        # 计算预训练模型输出层的输入，即特征。
+        output_features = net.features(X.as_in_context(ctx))
+        # 将特征作为我们定义的输出网络的输入，计算输出。
+        outputs = net.output_new(output_features)
+        l += loss(outputs, y).mean().asscalar()
+    return l / len(data)
 
-def train(net, train_data, valid_data, num_epochs, lr, wd, ctx, lr_period, 
+def train(net, train_data, valid_data, num_epochs, lr, wd, ctx, lr_period,
           lr_decay):
-    trainer = gluon.Trainer(
-        net.collect_params(), 'sgd', {'learning_rate': lr, 'momentum': 0.9, 
-                                      'wd': wd})
+    # 只训练我们定义的输出网络。
+    trainer = gluon.Trainer(net.output_new.collect_params(), 'sgd',
+                            {'learning_rate': lr, 'momentum': 0.9, 'wd': wd})
     prev_time = datetime.datetime.now()
     for epoch in range(num_epochs):
-        train_loss = 0.0
+        train_l = 0.0
         if epoch > 0 and epoch % lr_period == 0:
             trainer.set_learning_rate(trainer.learning_rate * lr_decay)
-        for data, label in train_data:
-            label = label.as_in_context(ctx)
+        for X, y in train_data:
+            y = y.astype('float32').as_in_context(ctx)
+            # 计算预训练模型输出层的输入，即特征。
+            output_features = net.features(X.as_in_context(ctx))
             with autograd.record():
-                output = net(data.as_in_context(ctx))
-                loss = softmax_cross_entropy(output, label)
-            loss.backward()
+                # 将特征作为我们定义的输出网络的输入，计算输出。
+                outputs = net.output_new(output_features)
+                l = loss(outputs, y)
+            # 反向传播只发生在我们定义的输出网络上。
+            l.backward()
             trainer.step(batch_size)
-            train_loss += nd.mean(loss).asscalar()
+            train_l += l.mean().asscalar()
         cur_time = datetime.datetime.now()
         h, remainder = divmod((cur_time - prev_time).seconds, 3600)
         m, s = divmod(remainder, 60)
-        time_str = "Time %02d:%02d:%02d" % (h, m, s)
-        if valid_data is not None:  
+        time_s = "time %02d:%02d:%02d" % (h, m, s)
+        if valid_data is not None:
             valid_loss = get_loss(valid_data, net, ctx)
-            epoch_str = ("Epoch %d. Train loss: %f, Valid loss %f, "
-                         % (epoch, train_loss / len(train_data), valid_loss))
+            epoch_s = ("epoch %d, train loss %f, valid loss %f, "
+                       % (epoch + 1, train_l / len(train_data), valid_loss))
         else:
-            epoch_str = ("Epoch %d. Train loss: %f, "
-                         % (epoch, train_loss / len(train_data)))
+            epoch_s = ("epoch %d, train loss %f, "
+                       % (epoch + 1, train_l / len(train_data)))
         prev_time = cur_time
-        print(epoch_str + time_str + ', lr ' + str(trainer.learning_rate))
+        print(epoch_s + time_s + ', lr ' + str(trainer.learning_rate))
 ```
 
-以下定义训练参数并训练模型。这些参数均可调。为了使网页编译快一点，我们这里将epoch数量有意设为1。事实上，epoch一般可以调大些。
+## 训练并验证模型
 
-我们将依据验证集的结果不断优化模型设计和调整参数。依据下面的参数设置，优化算法的学习率将在每80个epoch自乘0.1。
+现在，我们可以训练并验证模型了。以下的超参数都是可以调节的，例如增加迭代周期等。由于`lr_period`和`lr_decay`分别设为10和0.1，优化算法的学习率将在每10个迭代周期后自乘0.1。
 
 ```{.python .input  n=9}
-ctx = utils.try_gpu()
-num_epochs = 1
-learning_rate = 0.01
-weight_decay = 5e-4
-lr_period = 80
-lr_decay = 0.1
-
-net = get_net(ctx)
+ctx, num_epochs, lr, wd = gb.try_gpu(), 1, 0.01, 1e-4
+lr_period, lr_decay, net = 10, 0.1, get_net(ctx)
 net.hybridize()
-train(net, train_data, valid_data, num_epochs, learning_rate, 
-      weight_decay, ctx, lr_period, lr_decay)
+train(net, train_data, valid_data, num_epochs, lr, wd, ctx, lr_period,
+      lr_decay)
 ```
 
-## 对测试集分类
+## 对测试集分类并在Kaggle提交结果
 
-当得到一组满意的模型设计和参数后，我们使用全部训练数据集（含验证集）重新训练模型，并对测试集分类。
+当得到一组满意的模型设计和超参数后，我们使用全部训练数据集（含验证集）重新训练模型，并对测试集分类。注意，我们要用刚训练好的输出网络做预测。
 
 ```{.python .input  n=8}
-import numpy as np
-
 net = get_net(ctx)
 net.hybridize()
-train(net, train_valid_data, None, num_epochs, learning_rate, weight_decay, 
-      ctx, lr_period, lr_decay)
+train(net, train_valid_data, None, num_epochs, lr, wd, ctx, lr_period,
+      lr_decay)
 
-outputs = []
+preds = []
 for data, label in test_data:
-    output = nd.softmax(net(data.as_in_context(ctx)))
-    outputs.extend(output.asnumpy())
+    # 计算预训练模型输出层的输入，即特征。
+    output_features = net.features(data.as_in_context(ctx))
+    # 将特征作为我们定义的输出网络的输入，计算输出。
+    output = nd.softmax(net.output_new(output_features))
+    preds.extend(output.asnumpy())
 ids = sorted(os.listdir(os.path.join(data_dir, input_dir, 'test/unknown')))
 with open('submission.csv', 'w') as f:
     f.write('id,' + ','.join(train_valid_ds.synsets) + '\n')
-    for i, output in zip(ids, outputs):
+    for i, output in zip(ids, preds):
         f.write(i.split('.')[0] + ',' + ','.join(
             [str(num) for num in output]) + '\n')
 ```
 
-上述代码执行完会生成一个`submission.csv`的文件用于在Kaggle上提交。这是Kaggle要求的提交格式。这时我们可以在Kaggle上把对测试集分类的结果提交并查看分类准确率。你需要登录Kaggle网站，打开[120种狗类识别问题](https://www.kaggle.com/c/dog-breed-identification)，并点击下方右侧`Submit Predictions`按钮。
-
-![](../img/kaggle-dog-submit1.png)
+执行完上述代码后，会生成一个“submission.csv”文件。这个文件符合Kaggle比赛要求的提交格式。这时我们可以在Kaggle上把对测试集分类的结果提交并查看分类准确率。你需要登录Kaggle网站，访问ImageNet Dogs比赛网页，并点击右侧“Submit Predictions”或“Late Submission”按钮。然后，点击页面下方“Upload Submission File”选择需要提交的分类结果文件。最后，点击页面最下方的“Make Submission”按钮就可以查看结果了。
 
 
-请点击下方`Upload Submission File`选择需要提交的预测结果。然后点击下方的`Make Submission`按钮就可以查看结果啦！
+## 小结
 
-![](../img/kaggle-dog-submit2.png)
-
-温馨提醒，目前**Kaggle仅限每个账号一天以内5次提交结果的机会**。所以提交结果前务必三思。
+* 我们可以使用在ImageNet数据集上预训练的模型并微调，从而以较小的计算开销对ImageNet的子集数据集做分类。
 
 
-## 作业（[汇报作业和查看其他小伙伴作业](https://discuss.gluon.ai/t/topic/2399)）：
+## 练习
 
-* 使用Kaggle完整数据集，把batch_size和num_epochs分别调大些，可以在Kaggle上拿到什么样的准确率和名次？
-* 你还有什么其他办法可以继续改进模型和参数？小伙伴们都期待你的分享。
+* 使用Kaggle完整数据集，把批量大小`batch_size`和迭代周期数`num_epochs`分别调大些，可以在Kaggle上拿到什么样的结果？
+* 使用更深的预训练模型并微调，你能获得更好的结果吗？
+* 扫码直达讨论区，在社区交流方法和结果。你能发掘出其他更好的技巧吗？
 
-**吐槽和讨论欢迎点**[这里](https://discuss.gluon.ai/t/topic/2399)
+## 扫码直达[讨论区](https://discuss.gluon.ai/t/topic/2399)
+
+![](../img/qr_kaggle-gluon-dog.svg)
+
+## 参考文献
+
+[1] Kaggle ImageNet Dogs比赛网址。https://www.kaggle.com/c/dog-breed-identification

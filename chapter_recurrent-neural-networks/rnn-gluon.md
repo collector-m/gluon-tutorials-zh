@@ -1,295 +1,160 @@
-# 循环神经网络 --- 使用Gluon
+# 循环神经网络的Gluon实现
 
-本节介绍如何使用`Gluon`训练循环神经网络。
-
-
-## Penn Tree Bank (PTB) 数据集
-
-我们以单词为基本元素来训练语言模型。[Penn Tree Bank](https://catalog.ldc.upenn.edu/ldc99t42)（PTB）是一个标准的文本序列数据集。它包括训练集、验证集和测试集。
-
-下面我们载入数据集。
+本节将使用Gluon来实现基于循环神经网络的语言模型。首先，我们读取周杰伦专辑歌词数据集。
 
 ```{.python .input  n=1}
+import gluonbook as gb
 import math
-import os
+from mxnet import autograd, gluon, init, nd
+from mxnet.gluon import loss as gloss, nn, rnn
 import time
-import numpy as np
-import mxnet as mx
-from mxnet import gluon, autograd
-from mxnet.gluon import nn, rnn
 
-import zipfile
-with zipfile.ZipFile('../data/ptb.zip', 'r') as zin:
-    zin.extractall('../data/')
+(corpus_indices, char_to_idx, idx_to_char,
+ vocab_size) = gb.load_data_jay_lyrics()
 ```
 
-## 建立词语索引
+## 定义模型
 
-下面定义了`Dictionary`类来映射词语和索引。
+Gluon的`rnn`模块提供了循环神经网络的实现。下面构造一个单隐藏层、隐藏单元个数为256的循环神经网络层`rnn_layer`，并对权重做初始化。
 
-```{.python .input  n=2}
-class Dictionary(object):
-    def __init__(self):
-        self.word_to_idx = {}
-        self.idx_to_word = []
-
-    def add_word(self, word):
-        if word not in self.word_to_idx:
-            self.idx_to_word.append(word)
-            self.word_to_idx[word] = len(self.idx_to_word) - 1
-        return self.word_to_idx[word]
-
-    def __len__(self):
-        return len(self.idx_to_word)
+```{.python .input  n=26}
+num_hiddens = 256
+rnn_layer = rnn.RNN(num_hiddens)
+rnn_layer.initialize()
 ```
 
-以下的`Corpus`类按照读取的文本数据集建立映射词语和索引的词典，并将文本转换成词语索引的序列。这样，每个文本数据集就变成了`NDArray`格式的整数序列。
+接下来调用`rnn_layer`的成员函数`begin_state`来返回初始化的隐藏状态列表。它有一个形状为（隐藏层个数，批量大小，隐藏单元个数）的元素。
 
-```{.python .input  n=3}
-class Corpus(object):
-    def __init__(self, path):
-        self.dictionary = Dictionary()
-        self.train = self.tokenize(path + 'train.txt')
-        self.valid = self.tokenize(path + 'valid.txt')
-        self.test = self.tokenize(path + 'test.txt')
-
-    def tokenize(self, path):
-        assert os.path.exists(path)
-        # 将词语添加至词典。
-        with open(path, 'r') as f:
-            tokens = 0
-            for line in f:
-                words = line.split() + ['<eos>']
-                tokens += len(words)
-                for word in words:
-                    self.dictionary.add_word(word)
-        # 将文本转换成词语索引的序列（NDArray格式）。
-        with open(path, 'r') as f:
-            indices = np.zeros((tokens,), dtype='int32')
-            idx = 0
-            for line in f:
-                words = line.split() + ['<eos>']
-                for word in words:
-                    indices[idx] = self.dictionary.word_to_idx[word]
-                    idx += 1
-        return mx.nd.array(indices, dtype='int32')
+```{.python .input  n=37}
+batch_size = 2
+state = rnn_layer.begin_state(batch_size=batch_size)
+state[0].shape
 ```
 
-看一下词典的大小。
+与上一节里实现的循环神经网络不同，这里`rnn_layer`的输入形状为（时间步数，批量大小，输入个数）。其中输入个数即one-hot向量长度（词典大小）。此外，`rnn_layer`作为Gluon的`rnn.RNN`实例，在前向计算后会分别返回输出和隐藏状态。其中的输出指的是隐藏层在各个时间步上计算并输出的隐藏状态，它们通常作为后续输出层的输入。需要强调的是，该“输出”本身并不涉及输出层计算，形状为（时间步数，批量大小，隐藏单元个数）。而`rnn.RNN`实例在前向计算返回的隐藏状态指的是隐藏层在最后时间步的可用于初始化下一时间步的隐藏状态：当隐藏层有多层时，每一层的隐藏状态都会记录在该变量中；对于像长短期记忆这样的循环神经网络，该变量还会包含其他信息。我们会在本章后面的小节介绍长短期记忆和深度循环神经网络。
 
-```{.python .input  n=4}
-data = '../data/ptb/ptb.'
-corpus = Corpus(data)
-vocab_size = len(corpus.dictionary)
-vocab_size
+```{.python .input  n=38}
+num_steps = 35
+X = nd.random.uniform(shape=(num_steps, batch_size, vocab_size))
+Y, state_new = rnn_layer(X, state)
+Y.shape, len(state_new), state_new[0].shape
 ```
 
-## 循环神经网络模型库
+接下来我们继承Block类来定义一个完整的循环神经网络。它首先将输入数据使用one-hot向量表示后输入到`rnn_layer`中，然后使用全连接输出层得到输出。输出个数等于词典大小`vocab_size`。
 
-我们可以定义一个循环神经网络模型库。这样就可以支持各种不同的循环神经网络模型了。
-
-```{.python .input  n=5}
-class RNNModel(gluon.Block):
-    """循环神经网络模型库"""
-    def __init__(self, mode, vocab_size, embed_dim, hidden_dim,
-                 num_layers, dropout=0.5, **kwargs):
+```{.python .input  n=39}
+# 本类已保存在 gluonbook 包中方便以后使用。
+class RNNModel(nn.Block):
+    def __init__(self, rnn_layer, vocab_size, **kwargs):
         super(RNNModel, self).__init__(**kwargs)
-        with self.name_scope():
-            self.drop = nn.Dropout(dropout)
-            self.encoder = nn.Embedding(vocab_size, embed_dim,
-                                        weight_initializer=mx.init.Uniform(0.1))
-            if mode == 'rnn_relu':
-                self.rnn = rnn.RNN(hidden_dim, num_layers, activation='relu',
-                                   dropout=dropout, input_size=embed_dim)
-            elif mode == 'rnn_tanh':
-                self.rnn = rnn.RNN(hidden_dim, num_layers, dropout=dropout,
-                                   input_size=embed_dim)
-            elif mode == 'lstm':
-                self.rnn = rnn.LSTM(hidden_dim, num_layers, dropout=dropout,
-                                    input_size=embed_dim)
-            elif mode == 'gru':
-                self.rnn = rnn.GRU(hidden_dim, num_layers, dropout=dropout,
-                                   input_size=embed_dim)
-            else:
-                raise ValueError("Invalid mode %s. Options are rnn_relu, "
-                                 "rnn_tanh, lstm, and gru"%mode)
-
-            self.decoder = nn.Dense(vocab_size, in_units=hidden_dim)
-            self.hidden_dim = hidden_dim
+        self.rnn = rnn_layer
+        self.vocab_size = vocab_size
+        self.dense = nn.Dense(vocab_size)
 
     def forward(self, inputs, state):
-        emb = self.drop(self.encoder(inputs))
-        output, state = self.rnn(emb, state)
-        output = self.drop(output)
-        decoded = self.decoder(output.reshape((-1, self.hidden_dim)))
-        return decoded, state
+        # 将输入转置成（num_steps，batch_size）后获取 one-hot 向量表示。
+        X = nd.one_hot(inputs.T, self.vocab_size)
+        Y, state = self.rnn(X, state)
+        # 全连接层会首先将 Y 的形状变成（num_steps * batch_size，num_hiddens），
+        # 它的输出形状为（num_steps * batch_size，vocab_size）。
+        output = self.dense(Y.reshape((-1, Y.shape[-1])))
+        return output, state
 
     def begin_state(self, *args, **kwargs):
         return self.rnn.begin_state(*args, **kwargs)
 ```
 
-## 定义参数
+## 模型训练
 
-我们接着定义模型参数。我们选择使用ReLU为激活函数的循环神经网络为例。这里我们把`epochs`设为1是为了演示方便。
+同前一节一样，以下定义了一个预测函数。这里的实现区别在于前向计算和初始化隐藏状态的函数接口。
 
-
-## 多层循环神经网络
-
-我们通过`num_layers`设置循环神经网络隐含层的层数，例如2。
-
-对于一个多层循环神经网络，当前时刻隐含层的输入来自同一时刻输入层（如果有）或上一隐含层的输出。每一层的隐含状态只沿着同一层传递。
-
-把[单层循环神经网络](rnn-scratch.md)中隐含层的每个单元当做一个函数$f$，这个函数在$t$时刻的输入是$\mathbf{X}_t, \mathbf{H}_{t-1}$，输出是$\mathbf{H}_t$：
-
-$$f(\mathbf{X}_t, \mathbf{H}_{t-1}) = \mathbf{H}_t$$
-
-假设输入为第0层，输出为第$L+1$层，在一共$L$个隐含层的循环神经网络中，上式中可以拓展成以下的函数:
-
-$$f(\mathbf{H}_t^{(l-1)}, \mathbf{H}_{t-1}^{(l)}) = \mathbf{H}_t^{(l)}$$
-
-如下图所示。
-
-![](../img/multi-layer-rnn.svg)
-
-```{.python .input  n=6}
-model_name = 'rnn_relu'
-
-embed_dim = 100
-hidden_dim = 100
-num_layers = 2
-lr = 1.0
-clipping_norm = 0.2
-epochs = 1
-batch_size = 32
-num_steps = 5
-dropout_rate = 0.2
-eval_period = 500
+```{.python .input  n=41}
+# 本函数已保存在 gluonbook 包中方便以后使用。
+def predict_rnn_gluon(prefix, num_chars, model, vocab_size, ctx, idx_to_char,
+                      char_to_idx):
+    # 使用 model 的成员函数来初始化隐藏状态。
+    state = model.begin_state(batch_size=1, ctx=ctx)
+    output = [char_to_idx[prefix[0]]]
+    for t in range(num_chars + len(prefix) - 1):
+        X = nd.array([output[-1]], ctx=ctx).reshape((1, 1))
+        (Y, state) = model(X, state)  # 前向计算不需要传入模型参数。
+        if t < len(prefix) - 1:
+            output.append(char_to_idx[prefix[t + 1]])
+        else:
+            output.append(int(Y.argmax(axis=1).asscalar()))
+    return ''.join([idx_to_char[i] for i in output])
 ```
 
-## 批量采样
+让我们使用权重为随机值的模型来预测一次。
 
-我们将数据进一步处理为便于相邻批量采样的格式。
-
-```{.python .input  n=7}
-# 尝试使用GPU
-import sys
-sys.path.append('..')
-import utils
-context = utils.try_gpu()
-
-def batchify(data, batch_size):
-    """数据形状 (num_batches, batch_size)"""
-    num_batches = data.shape[0] // batch_size
-    data = data[:num_batches * batch_size]
-    data = data.reshape((batch_size, num_batches)).T
-    return data
-
-train_data = batchify(corpus.train, batch_size).as_in_context(context)
-val_data = batchify(corpus.valid, batch_size).as_in_context(context)
-test_data = batchify(corpus.test, batch_size).as_in_context(context)
-
-model = RNNModel(model_name, vocab_size, embed_dim, hidden_dim,
-                       num_layers, dropout_rate)
-model.collect_params().initialize(mx.init.Xavier(), ctx=context)
-trainer = gluon.Trainer(model.collect_params(), 'sgd',
-                        {'learning_rate': lr, 'momentum': 0, 'wd': 0})
-loss = gluon.loss.SoftmaxCrossEntropyLoss()
-
-def get_batch(source, i):
-    seq_len = min(num_steps, source.shape[0] - 1 - i)
-    data = source[i : i + seq_len]
-    target = source[i + 1 : i + 1 + seq_len]
-    return data, target.reshape((-1,))
+```{.python .input  n=42}
+ctx = gb.try_gpu()
+model = RNNModel(rnn_layer, vocab_size)
+model.initialize(force_reinit=True, ctx=ctx)
+predict_rnn_gluon('分开', 10, model, vocab_size, ctx, idx_to_char, char_to_idx)
 ```
 
-## 从计算图分离隐含状态
+接下来实现训练函数。它的算法同上一节一样，但这里只使用了随机采样来读取数据。
 
-在模型训练的每次迭代中，当前批量序列的初始隐含状态来自上一个相邻批量序列的输出隐含状态。为了使模型参数的梯度计算只依赖当前的批量序列，从而减小每次迭代的计算开销，我们可以使用`detach`函数来将隐含状态从计算图分离出来。
+```{.python .input  n=18}
+# 本函数已保存在 gluonbook 包中方便以后使用。
+def train_and_predict_rnn_gluon(model, num_hiddens, vocab_size, ctx,
+                                corpus_indices, idx_to_char, char_to_idx,
+                                num_epochs, num_steps, lr, clipping_theta,
+                                batch_size, pred_period, pred_len, prefixes):
+    loss = gloss.SoftmaxCrossEntropyLoss()
+    model.initialize(ctx=ctx, force_reinit=True, init=init.Normal(0.01))
+    trainer = gluon.Trainer(model.collect_params(), 'sgd',
+                            {'learning_rate': lr, 'momentum': 0, 'wd': 0})
 
-```{.python .input  n=8}
-def detach(state):
-    if isinstance(state, (tuple, list)):
-        state = [i.detach() for i in state]
-    else:
-        state = state.detach()
-    return state
-```
-
-## 训练和评价模型
-
-和之前一样，我们定义模型评价函数。
-
-```{.python .input  n=9}
-def model_eval(data_source):
-    total_L = 0.0
-    ntotal = 0
-    hidden = model.begin_state(func = mx.nd.zeros, batch_size = batch_size,
-                               ctx=context)
-    for i in range(0, data_source.shape[0] - 1, num_steps):
-        data, target = get_batch(data_source, i)
-        output, hidden = model(data, hidden)
-        L = loss(output, target)
-        total_L += mx.nd.sum(L).asscalar()
-        ntotal += L.size
-    return total_L / ntotal
-```
-
-最后，我们可以训练模型并在每个epoch评价模型在验证集上的结果。我们可以参考验证集上的结果调参。
-
-```{.python .input  n=10}
-def train():
-    for epoch in range(epochs):
-        total_L = 0.0
-        start_time = time.time()
-        hidden = model.begin_state(func = mx.nd.zeros, batch_size = batch_size,
-                                   ctx = context)
-        for ibatch, i in enumerate(range(0, train_data.shape[0] - 1, num_steps)):
-            data, target = get_batch(train_data, i)
-            # 从计算图分离隐含状态。
-            hidden = detach(hidden)
+    for epoch in range(num_epochs):
+        loss_sum, start = 0.0, time.time()
+        data_iter = gb.data_iter_consecutive(
+            corpus_indices, batch_size, num_steps, ctx)
+        state = model.begin_state(batch_size=batch_size, ctx=ctx)
+        for t, (X, Y) in enumerate(data_iter):
+            for s in state:
+                s.detach()
             with autograd.record():
-                output, hidden = model(data, hidden)
-                L = loss(output, target)
-                L.backward()
+                (output, state) = model(X, state)
+                y = Y.T.reshape((-1,))
+                l = loss(output, y).mean()
+            l.backward()
+            # 梯度裁剪。
+            params = [p.data() for p in model.collect_params().values()]
+            gb.grad_clipping(params, clipping_theta, ctx)
+            trainer.step(1)  # 因为已经误差取过均值，梯度不用再做平均。
+            loss_sum += l.asscalar()
 
-            grads = [i.grad(context) for i in model.collect_params().values()]
-            # 梯度裁剪。需要注意的是，这里的梯度是整个批量的梯度。
-            # 因此我们将clipping_norm乘以num_steps和batch_size。
-            gluon.utils.clip_global_norm(grads,
-                                         clipping_norm * num_steps * batch_size)
-
-            trainer.step(batch_size)
-            total_L += mx.nd.sum(L).asscalar()
-
-            if ibatch % eval_period == 0 and ibatch > 0:
-                cur_L = total_L / num_steps / batch_size / eval_period
-                print('[Epoch %d Batch %d] loss %.2f, perplexity %.2f' % (
-                    epoch + 1, ibatch, cur_L, math.exp(cur_L)))
-                total_L = 0.0
-
-        val_L = model_eval(val_data)
-
-        print('[Epoch %d] time cost %.2fs, validation loss %.2f, validation ' 
-              'perplexity %.2f' % (epoch + 1, time.time() - start_time, val_L,
-                                   math.exp(val_L)))
+        if (epoch + 1) % pred_period == 0:
+            print('epoch %d, perplexity %f, time %.2f sec' % (
+                epoch + 1, math.exp(loss_sum / (t + 1)), time.time() - start))
+            for prefix in prefixes:
+                print(' -', predict_rnn_gluon(
+                    prefix, pred_len, model, vocab_size,
+                    ctx, idx_to_char, char_to_idx))
 ```
 
-训练完模型以后，我们就可以在测试集上评价模型了。
+使用和上一节实验中一样的超参数来训练模型。
 
-```{.python .input  n=11}
-train()
-test_L = model_eval(test_data)
-print('Test loss %.2f, test perplexity %.2f' % (test_L, math.exp(test_L)))
+```{.python .input  n=19}
+num_epochs, batch_size, lr, clipping_theta = 200, 32, 1e2, 1e-2
+pred_period, pred_len, prefixes = 50, 50, ['分开', '不分开']
+train_and_predict_rnn_gluon(model, num_hiddens, vocab_size, ctx,
+                            corpus_indices, idx_to_char, char_to_idx,
+                            num_epochs, num_steps, lr, clipping_theta,
+                            batch_size, pred_period, pred_len, prefixes)
 ```
 
-## 结论
+## 小结
 
-* 我们可以使用Gluon轻松训练各种不同的循环神经网络，并设置网络参数，例如网络的层数。
-* 训练迭代中需要将隐含状态从计算图中分离，使模型参数梯度计算只依赖当前的时序数据批量采样。
-
+* Gluon的`rnn`模块提供了循环神经网络层的实现。
+* Gluon的`rnn.RNN`实例在前向计算后会分别返回输出和隐藏状态。该前向计算并不涉及输出层计算。
 
 ## 练习
 
-* 调调参数（例如epochs、隐含层的层数、序列长度、隐含状态长度和学习率），看看对运行时间、训练集、验证集和测试集上perplexity造成的影响。
+* 比较跟前一节的实现。看看Gluon的实现是不是运行速度更快？如果你觉得差别明显，试着找找原因。
 
-**吐槽和讨论欢迎点**[这里](https://discuss.gluon.ai/t/topic/4089)
+## 扫码直达[讨论区](https://discuss.gluon.ai/t/topic/4089)
+
+![](../img/qr_rnn-gluon.svg)
